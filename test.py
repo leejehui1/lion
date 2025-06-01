@@ -37,18 +37,31 @@ def verify_google_token(id_token):
 
 # === 사용자 인증 함수 ===
 def registerUser(data):
+    """
+    Google OAuth 정보로 새 사용자를 등록합니다.
+    
+    Args:
+        data (dict): 사용자 정보
+            - sub: Google OAuth sub
+            - email: 이메일
+            - name: 이름
+    
+    Returns:
+        dict: 성공 시 {"success": True, "user": user_data}
+              실패 시 {"error": "에러 메시지"}
+    """
     try:
-        # 이미 존재하는 이메일인지 확인
-        existing_user = supabase.table("user").select("*").eq("email", data["email"]).execute()
+        # 이미 존재하는 sub인지 확인
+        existing_user = supabase.table("user").select("*").eq("sub", data["sub"]).execute()
         if existing_user.data:
-            return {"error": "이미 존재하는 이메일입니다."}
+            return {"error": "이미 등록된 사용자입니다."}
         
         # 새 사용자 등록
         user_id = str(uuid.uuid4())
         new_user = {
             "id": user_id,
+            "sub": data["sub"],
             "email": data["email"],
-            "password": data["password"],  # 실제 구현시 반드시 암호화 필요
             "name": data.get("name", ""),
             "created_at": datetime.utcnow().isoformat()
         }
@@ -60,63 +73,32 @@ def registerUser(data):
     except Exception as e:
         return {"error": str(e)}
 
-def loginUser(email, password):
-    try:
-        # 이메일로 사용자 찾기
-        result = supabase.table("user").select("*").eq("email", email).execute()
-        if not result.data:
-            return {"error": "사용자를 찾을 수 없습니다."}
-        
-        user = result.data[0]
-        # 비밀번호 확인 (실제 구현시 암호화된 비밀번호 비교 필요)
-        if user["password"] != password:
-            return {"error": "잘못된 비밀번호입니다."}
-        
-        # 세션에 사용자 정보 저장
-        session['user'] = {
-            "id": user["id"],
-            "email": user["email"],
-            "name": user["name"]
-        }
-        return {"success": True, "user": session['user']}
-    except Exception as e:
-        return {"error": str(e)}
-
-def logoutUser():
-    try:
-        session.clear()
-        return {"success": True}
-    except Exception as e:
-        return {"error": str(e)}
-
-def getUserById(id):
-    try:
-        result = supabase.table("user").select("*").eq("id", id).execute()
-        if not result.data:
-            return {"error": "사용자를 찾을 수 없습니다."}
-        
-        user = result.data[0]
-        # 비밀번호는 제외하고 반환
-        del user["password"]
-        return {"success": True, "user": user}
-    except Exception as e:
-        return {"error": str(e)}
-
 def loginByToken(token):
+    """
+    Google ID 토큰으로 로그인합니다.
+    
+    Args:
+        token (str): Google ID 토큰
+    
+    Returns:
+        dict: 성공 시 {"success": True, "user": user_data}
+              실패 시 {"error": "에러 메시지"}
+    """
     try:
-        # JWT 토큰 검증 (실제 구현시 proper JWT 검증 필요)
-        user_info = verify_google_token(token)  # 기존 함수 재사용
+        # JWT 토큰 검증
+        user_info = verify_google_token(token)
         if not user_info:
             return {"error": "유효하지 않은 토큰입니다."}
         
         # 사용자 정보 조회 또는 생성
-        result = supabase.table("user").select("*").eq("email", user_info["email"]).execute()
+        result = supabase.table("user").select("*").eq("sub", user_info["sub"]).execute()
         if result.data:
             user = result.data[0]
         else:
             # 새 사용자 생성
             new_user = {
                 "id": str(uuid.uuid4()),
+                "sub": user_info["sub"],
                 "email": user_info["email"],
                 "name": user_info["name"],
                 "created_at": datetime.utcnow().isoformat()
@@ -128,9 +110,45 @@ def loginByToken(token):
         session['user'] = {
             "id": user["id"],
             "email": user["email"],
-            "name": user["name"]
+            "name": user["name"],
+            "sub": user["sub"]
         }
         return {"success": True, "user": session['user']}
+    except Exception as e:
+        return {"error": str(e)}
+
+def logoutUser():
+    """
+    현재 사용자를 로그아웃합니다.
+    
+    Returns:
+        dict: 성공 시 {"success": True}
+              실패 시 {"error": "에러 메시지"}
+    """
+    try:
+        session.clear()
+        return {"success": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+def getUserById(id):
+    """
+    사용자 ID로 사용자 정보를 조회합니다.
+    
+    Args:
+        id (str): 사용자 ID
+    
+    Returns:
+        dict: 성공 시 {"success": True, "user": user_data}
+              실패 시 {"error": "에러 메시지"}
+    """
+    try:
+        result = supabase.table("user").select("*").eq("id", id).execute()
+        if not result.data:
+            return {"error": "사용자를 찾을 수 없습니다."}
+        
+        user = result.data[0]
+        return {"success": True, "user": user}
     except Exception as e:
         return {"error": str(e)}
 
@@ -909,38 +927,14 @@ def login():
     if not id_token:
         return "id_token 필요", 400
     
-    user_info = verify_google_token(id_token)
-    if not user_info:
-        return "구글 토큰 검증 실패", 400
-    
-    user_id = user_info["sub"]
-    
-    # user 테이블에 sub를 id로 사용해 검색
-    result = supabase.table("user").select("*").eq("id", user_id).execute()
-    if result.data:
-        user = result.data[0]
-    else:
-        # 신규 사용자 등록
-        insert_res = supabase.table("user").insert({
-            "id": user_id,
-            "sub": user_info["sub"],
-            "email": user_info["email"],
-            "name": user_info["name"]
-        }).execute()
-        if insert_res.status_code != 201:
-            return "사용자 생성 실패", 500
-        user = {
-            "id": user_id,
-            "sub": user_info["sub"],
-            "email": user_info["email"],
-            "name": user_info["name"]
-        }
-    session['user'] = user
+    result = loginByToken(id_token)
+    if "error" in result:
+        return result["error"], 400
     return redirect('/')
 
 @app.route('/logout')
 def logout():
-    session.clear()
+    logoutUser()
     return redirect('/')
 
 @app.route('/add-i-schedule', methods=['POST'])
@@ -1040,40 +1034,6 @@ def add_post():
     }).execute()
     return redirect('/')
 
-# === 새로운 인증 API 엔드포인트 ===
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        return {"error": "이메일과 비밀번호가 필요합니다."}, 400
-    
-    result = registerUser(data)
-    if "error" in result:
-        return result, 400
-    return result
-
-@app.route('/api/login', methods=['POST'])
-def login_email():
-    data = request.get_json()
-    if not data or not data.get('email') or not data.get('password'):
-        return {"error": "이메일과 비밀번호가 필요합니다."}, 400
-    
-    result = loginUser(data['email'], data['password'])
-    if "error" in result:
-        return result, 401
-    return result
-
-@app.route('/api/token-login', methods=['POST'])
-def login_token():
-    data = request.get_json()
-    if not data or not data.get('token'):
-        return {"error": "토큰이 필요합니다."}, 400
-    
-    result = loginByToken(data['token'])
-    if "error" in result:
-        return result, 401
-    return result
-
 @app.route('/api/user/<user_id>', methods=['GET'])
 def get_user(user_id):
     if not session.get('user'):
@@ -1082,13 +1042,6 @@ def get_user(user_id):
     result = getUserById(user_id)
     if "error" in result:
         return result, 404
-    return result
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    result = logoutUser()
-    if "error" in result:
-        return result, 500
     return result
 
 # === 스케줄 관리 API 엔드포인트 ===
